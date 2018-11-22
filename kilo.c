@@ -69,8 +69,8 @@ struct editorSyntax {
     char **filematch;
     char **keywords;
     char singleline_comment_start[2];
-    char multiline_comment_start[3];
-    char multiline_comment_end[3];
+    char multiline_comment_start[6];
+    char multiline_comment_end[6];
     int flags;
 };
 
@@ -102,6 +102,7 @@ struct editorConfig {
     int dirty;      /* File modified but not saved. */
     char *filename; /* Currently open filename */
     char statusmsg[80];
+    char display_filename[21];
     time_t statusmsg_time;
     struct editorSyntax *syntax;    /* Current syntax highlight, or NULL. */
 };
@@ -169,6 +170,23 @@ char *C_HL_keywords[] = {
         "void|",NULL
 };
 
+static char *Lua_HL_extensions[] = {".lua",NULL};
+static char *Lua_HL_keywords[] = {
+        /* Lua reserved words */
+        "and","break","do","else","elseif","end",
+        "false","for","function","if","in","local",
+        "nil","not","or","repeat","return","then",
+        "true","until","while",
+        /* Lua standard libs */
+        "string|","table|","math|","coroutine|","io|","debug|","os|",
+        // eLua libs
+        "uart|","term|","tmr|","cpu|","adc|","bit|","elua|","i2c|",
+        "pack|","rpc|","net|","pd|","pio|","pwm|","spi|","bonfire|",
+        // global names
+        "print|","require|","_G|","loadstring|","loadfile|",
+        NULL
+};
+
 /* Here we define an array of syntax highlights by extensions, keywords,
  * comments delimiters and flags. */
 struct editorSyntax HLDB[] = {
@@ -178,7 +196,15 @@ struct editorSyntax HLDB[] = {
         C_HL_keywords,
         "//","/*","*/",
         HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
+    },
+    {
+       // Lua
+        Lua_HL_extensions,
+        Lua_HL_keywords,
+        "--","--[[","--]]",
+        HL_HIGHLIGHT_STRINGS | HL_HIGHLIGHT_NUMBERS
     }
+
 };
 
 #define HLDB_ENTRIES (sizeof(HLDB)/sizeof(HLDB[0]))
@@ -507,11 +533,11 @@ int editorSyntaxToColor(int hl) {
     switch(hl) {
     case HL_COMMENT:
     case HL_MLCOMMENT: return 36;     /* cyan */
-    case HL_KEYWORD1: return 33;    /* yellow */
+    case HL_KEYWORD1: return 34;    /* yellow */
     case HL_KEYWORD2: return 32;    /* green */
     case HL_STRING: return 35;      /* magenta */
     case HL_NUMBER: return 31;      /* red */
-    case HL_MATCH: return 34;      /* blu */
+    case HL_MATCH: return 33;      /* blu */
     default: return 37;             /* white */
     }
 }
@@ -606,6 +632,12 @@ void editorDelRow(int at) {
     for (int j = at; j < E.numrows-1; j++) E.row[j].idx++;
     E.numrows--;
     E.dirty++;
+}
+
+// TH
+static void editorDelCurrentRow()
+{
+  editorDelRow(E.rowoff+E.cy);
 }
 
 /* Turn the editor rows into a single heap-allocated string.
@@ -853,6 +885,35 @@ void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
+static void editorSetDisplayFileName()
+{
+    unsigned int len;
+   
+    if ((len=strlen(E.filename))>sizeof(E.display_filename)-1) {
+       char buffer[255];
+       char *token[10];
+       int tcnt=0;
+     
+       strncpy(buffer,E.filename,sizeof(buffer));
+       // Separate Path into segments, maximum 5
+       token[0]=strtok(buffer,"/");
+       while (tcnt<9 && token[tcnt]) {
+         token[++tcnt]=strtok(NULL,"/"); 
+       }
+       if (tcnt<2) { // no complete path
+         snprintf(E.display_filename,sizeof(E.display_filename),"%.17s...",E.filename);
+       } else {
+         // Right justify the filename if it is larger then 13 chars   
+         char *p=token[tcnt-1];
+         len=strlen(p);
+         if (len>13) p+=len-13;  
+         snprintf(E.display_filename,sizeof(E.display_filename),"/%.3s...%.13s",token[0],p);
+       }
+    } else {
+      strcpy(E.display_filename,E.filename);
+    }
+}
+
 /* This function writes the whole screen using VT100 escape characters
  * starting from the logical state of the editor in the global state 'E'. */
 void editorRefreshScreen(void) {
@@ -931,7 +992,7 @@ void editorRefreshScreen(void) {
     abAppend(&ab,"\x1b[7m",4);
     char status[80], rstatus[80];
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
-        E.filename, E.numrows, E.dirty ? "(modified)" : "");
+        E.display_filename, E.numrows, E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus),
         "%d/%d",E.rowoff+E.cy+1,E.numrows);
     if (len > E.screencols) len = E.screencols;
@@ -1174,6 +1235,9 @@ void editorProcessKeypress(int fd) {
         /* We ignore ctrl-c, it can't be so simple to lose the changes
          * to the edited file. */
         break;
+    case CTRL_D:
+       editorDelCurrentRow();
+       break;        
     case CTRL_Q:        /* Ctrl-q */
         /* Quit if the file was already saved. */
         if (E.dirty && quit_times) {
@@ -1261,6 +1325,7 @@ int main(int argc, char **argv) {
     initEditor();
     editorSelectSyntaxHighlight(argv[1]);
     editorOpen(argv[1]);
+    editorSetDisplayFileName();
     enableRawMode(STDIN_FILENO);
     editorSetStatusMessage(
         "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
